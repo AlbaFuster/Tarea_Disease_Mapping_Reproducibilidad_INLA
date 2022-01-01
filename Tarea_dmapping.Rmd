@@ -1,0 +1,642 @@
+---
+title: "Disease Mapping y Reproducibilidad"
+author: "Alba Fuster Alonso y Alfredo Cortell Nicolau"
+output:
+  rmdformats::material:
+    highlight: kate
+    self_contained: true
+    code_folding: show
+    code_download: true
+    thumbnails: true
+    gallery: true
+    fig_width: 4
+    fig_height: 4
+    df_print: kable
+pkgdown:
+  as_is: true    
+---
+
+<style> body {text-align: justify} </style> <!-- Justify text. -->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r, include=FALSE}
+# Librerias
+library(sp)
+library(Matrix)
+library(spdep)
+library(maptools)
+library(lattice)
+library(coda)
+library(boot)
+library(R2WinBUGS)
+library(denstrip)
+library(rgdal)
+library(dplyr)
+library(viridis)
+library(gridExtra)
+library(RColorBrewer)
+library(INLA)
+```
+
+# Enunciado 
+
+En esta práctica nos disponemos a estudiar la mortalidad por enfermedad isquémica en hombres en Aragón durante el periodo 1991-2000. Podrás encontrar la cartografía de Aragón en el archivo aragon.shp (y archivos adjuntos y los datos de mortalidad por enfermedad isquémica, casos observados y esperados, en el archivo aragonR.data). Los datos en el archivo Rdata vienen ordenados según el "Código de Municipio" de cada uno de los municipios de Aragón.
+
+La práctica consta de tres tareas a realizar:
+
+* Importar los datos y establecer relaciones de vecindad entre municipios.
+
+* Implementar el modelo de suavización de Besag York y Mollié, utilizando dos aproximación a la inferencia Bayesiana distintas, *Integrated Nested Laplace Approximations* **(INLA)** y *Markov chain Monte Carlo* **(MCMC)**. 
+
+* Obtener las distribución a posteriori de la media para la **R**azón de **M**ortalidad **S**uavizada (RMS) y la probabilidad de que dicho riesgo sea mayor que 1 P(RMS > 1). 
+
+# Introducción
+
+La mortalidad por enfermedad isquémica es un fenómeno en constante estudio en la Península Ibérica. En concreto, nos centraremos en la Comunidad Autónoma de Aragón, donde las tasas por este tipo de mortalidad suelen ser algo menores con respecto a la media nacional, y han conocido además un descenso, ligero pero continuado, durante los últimos años (Boix et al., 2003; Giménez-Muñoz et al., 2016; Hervella et al., 2021). El presente trabajo utilizará datos por municipios para el período 1991-2000, y se centrará en varones, donde algunas las causas más frecuentes para este tipo de cardiopatía suele relacionarse con el tabaquismo, la hipertensión arterial o la dislipidemia (Tejada Meza et al., 2019).
+
+# Tarea 1
+
+ **Importar desde R la cartografía de Aragón y la mortalidad por enfermedad isquémica en esta Comunidad. Crea la estructura de vecindad necesaria para definir la distribución CAR.normal del modelo Besag, York y Mollié.** 
+
+```{r, include = FALSE}
+# Directorio
+# getwd()
+
+# Leer cartografía de Aragon
+carto_aragon <- readOGR("./datos", "aragon")
+
+# Crear la estructura de vecindad
+agn <- poly2nb(carto_aragon)
+vecinos <- nb2WB(agn)
+
+# Ordenar archivo de carografía igual que el Rdata
+carto_aragon <- carto_aragon[order(carto_aragon$CODMUNI), ]
+
+# Datos
+load("./datos/aragon.Rdata")
+
+# Observados y esperados
+obs <- Aragon.df$O
+esp <- Aragon.df$E
+
+# Razón de Mortalidad Estandarizada (RME)
+carto_aragon$rme <- obs / esp
+carto_aragon$ob <- obs
+```
+
+
+```{r, eval = FALSE}
+# Directorio
+# getwd()
+
+# Leer cartografía de Aragon
+carto_aragon <- readOGR("./datos", "aragon")
+
+# Crear la estructura de vecindad
+agn <- poly2nb(carto_aragon)
+vecinos <- nb2WB(agn)
+
+# Ordenar archivo de carografía igual que el Rdata
+carto_aragon <- carto_aragon[order(carto_aragon$CODMUNI), ]
+
+# Datos
+load("./datos/aragon.Rdata")
+
+# Observados y esperados
+obs <- Aragon.df$O
+esp <- Aragon.df$E
+
+# Razón de Mortalidad Estandarizada (RME)
+carto_aragon$rme <- obs / esp
+carto_aragon$ob <- obs
+```
+
+En primer lugar, representamos únicamente el número de defunciones observadas por la enfermedad en cada municipio (Figura 1). Esta representación no es acertada para la valoración del riesgo, ya que, los municipios que tengan un mayor número de habitantes tendrán un mayor número de casos. Este efecto puede apreciarse claramente en la imagen representada. En este sentido, la provincia de Teruel, con núcleos de población pequeños y poca densidad demográfica, muestra valores muy bajos (excepto su capital), al igual que las zonas pirenaicas y pre-pirenaicas a excepción de los núcleos de Jaca, Sabiñánigo y Aínsa. Por otro lado, la provincia de Zaragoza y en concreto la zona nuclear del valle del Ebro, con mayores concentraciones poblacionales, muestran los valores más altos.
+
+![Figura 1. Casos observados de mortalidad por enfermedad isquémica en hombres por municipio en Aragón.](.\figuras\fig1.png)
+
+```{r, include = FALSE}
+ob_cutoff <- c(0, 1, 2, 5, max(carto_aragon$ob))
+
+ob_disc <- cut(
+  carto_aragon$ob,
+  breaks = ob_cutoff,
+  include.lowest = TRUE
+)
+
+carto_aragon$ob_disc <- ob_disc
+
+spplot(
+  carto_aragon,
+  c("ob_disc"),
+  col.regions = brewer.pal(9, "BrBG")[c(2, 4, 6, 8)],
+  main = "Casos observados",
+  par.settings =
+    list(axis.line = list(col = "transparent"))
+)
+```
+
+En la Figura 2, se representa la Razón de Mortalidad Estandarizada (RME) para la unidad de estudio (municipio) i:
+
+$$RME_{i} = \frac{O_{i}}{E_{i}},$$
+donde $O_{i}$ es el número de defunciones por la enfermedad observados y $E_{i}$ el número de defunciones esperadas. Un RME mayor que 1 apunta exceso de riesgo (más muertes observadas que esperadas). 
+
+En la Figura 2 un mayor RMEs no corresponde con los municipios de mayor población, por tanto, las RME reflejan mejor el riesgo de la enfermedad por municipio. No obstante, la RME presenta problemas de estimación en áreas pequeñas, puesto que los pueblos pequeños tendrán necesariamente RMEs extremas. Esto puede apreciarse claramente al observar los datos, donde la margen derecha del Ebro y las zonas de montaña, a pesar de la normalización producida, siguen presentando valores a ambos extremos de la horquilla, frecuentemente en condiciones de vecindad, debido a la gran cantidad de pequeños núcleos de pobloación.
+
+Debido a este problema, puede plantearse la suavización del riesgo a través de distintos métodos, uno de los cuales se llevará a cabo en esta práctica: el modelo de suavización de Besag, York y Mollié (BYM). 
+
+![Figura 2. Razón de Mortalidad Estandarizada.](.\figuras\fig2.png)
+
+```{r, include = FALSE}
+rme_cutoff <- c(0, 0.1, 0.47, 1.35, 8.22)
+
+rme_disc <- cut(
+  carto_aragon$rme,
+  breaks = rme_cutoff,
+  include.lowest = TRUE
+)
+
+carto_aragon$rme_disc <- rme_disc
+
+spplot(
+  carto_aragon,
+  c("rme_disc"),
+  col.regions = brewer.pal(9, "BrBG")[c(2, 4, 6, 8)],
+  main = "Razón de Mortalizada Estandarizada",
+  par.settings =
+    list(axis.line = list(col = "transparent"))
+)
+```
+
+# Tarea 2{.tabset .tabset-fade}
+
+**Implementa el modelo de suavización de Besag York y Mollié para los datos anteriores. Simula dicho modelo en WinBUGS estableciendo los criterios de convergencia que consideres oportunos. Ten en cuenta que la simulación de este modelo puede ser algo lenta ya que continene 729 observaciones espacialmente dependientes.**
+
+Una propuesta de análisis espacial de riesgos en áreas pequeñas de particular popularidad la proponen J. Besag, J. York y A. Mollié publicada en el artículo *Bayesian image restoration with applications in spatial statistics (with Discussion)*. No es la única propuesta de modelización espacial en áreas pequeñas, pero es una de las más utilizadas y puede implementarse en WinBUGS, INLA y Stan. Dicha propuesta resulta la base para construir modelos más complejos, así como supone que la variabilidad de los riesgos pueda ser de dos tipos (intraregional y supraregional). El modelo BYM integra efectos aleatorios de tipo heterogéneo y CAR-normal que darán cuenta de ambas fuentes de variabilidad. 
+
+Se asume la siguiente función de verosimilitud **Poisson**:
+
+$$Y_{i} \sim Poisson(\lambda_{i}), \quad \lambda = E_{i}\rho_{i}, \quad log(\rho_{i}) =  \eta_{i}, \quad i = 1,...,729,$$
+asumimos que $\eta_{i} = \beta_{0} + u_{i} + v_{i}$ siendo $u$ un efecto aleatorio independiente y $v$ un efecto aleatorio estructurado en el espacio,
+
+$$u_{i} \sim N(0, \tau_{u}^{-1}), \quad v_{i}|v_{-i} \sim N(\frac{1}{n_{i}}\sum_{i \sim j}v_{j}, \frac{1}{n_{i}\tau_{v}}).$$
+
+Las distribuciones a priori para $\tau_{u}$ y $\tau_{v}$ han sido las siguientes,
+
+$$\tau_{v} \sim uniforme(0,10) \,  \, , \, \, \tau_{u} \sim uniforme(0,10),$$
+utilizamos $\tau$ porque en INLA se habla en terminos de precisión, sin embargo en WinBUGS se utiliza la desviación típica ($\sigma$).
+
+## Implementación en WinBUGS
+
+<<<<<<< HEAD
+Al implementar el modelo en WinBUGS se ha de observar que las cadenas convergen correctamente, que el Rhat de los parámetros estimados es menor de 1.1 y que el número de simulaciones efectivas es mayor de 100. Una vez comprobados los requisitos mencionados podemos dar por satisfactoria la simulación. Para las distribuciones *a priori* de este modelo se ha considerado la distribución uniforme. Además, en la Figura 5, se puede observar que los residuos siguen una distribución más o menos uniforme, por lo que, el comportamiento del ajuste es bueno. 
+=======
+Al implementar el modelo en WinBUGS se ha de observar que las cadenas convergen correctamente, que el Rhat de los parámetros estimados es menor de 1.1 y que el número de simulaciones efectivas es mayor de 100. Una vez comprobados los requisitos mencionados podemos dar por satisfactoria la simulación. Para las distribuciones *a priori* de este modelo se ha considerado la distribución uniforme.
+>>>>>>> 3e6550f55e212874750dd3586c05a1937f1a093a
+
+```{r}
+# Modelo
+model <- function() {
+
+  ## Verosimilitud
+  for (i in 1:n) {
+    O[i] ~ dpois(mu[i]) 
+    log(mu[i]) <- log(E[i]) + m + het[i] + sp[i] 
+    het[i] ~ dnorm(0, prechet) 
+    R[i] <- exp(m + het[i] + sp[i]) 
+    PR[i] <- step(R[i] - 1) 
+  }
+
+  ## Distribuciones a priori
+  sp[1:n] ~ car.normal(adj[], w[], num[], precsp)
+  m ~ dflat()
+  prechet <- pow(sdhet, -2)
+  precsp <- pow(sdsp, -2)
+  sdhet ~ dunif(0, 10)
+  sdsp ~ dunif(0, 10)
+
+  ## Residuales
+  for (i in 1:n) {
+    y.pred[i] ~ dpois(mu[i])
+    resid[i] <- y.pred[i] - O[i]
+    resid2[i] <- pow(resid[i], 2)
+    P.resid[i] <- step(resid[i]) - 0.5 * equals(resid[i], 0)
+  }
+
+  ## Medida calidad predictiva
+  MSE <- sum(resid2[])
+}
+
+# Datos
+data <- list(
+  E = Aragon.df$E,
+  O = Aragon.df$O,
+  adj = vecinos$adj,
+  w = vecinos$weights,
+  num = vecinos$num,
+  n = dim(Aragon.df)[1]
+)
+
+# Iniciales
+inits <- function() {
+  list(
+    m = rnorm(1, 0, 1),
+    het = rnorm(729, 0, 1),
+    sp = rnorm(729, 0, 1),
+    sdhet = runif(1, 0, 1),
+    sdsp = runif(1, 0, 1)
+  )
+}
+
+# Parámetros
+param <- c(
+  "sp", "m", "sdhet",
+  "sdsp", "R", "het",
+  "PR", "MSE", "P.resid",
+  "y.pred", "resid", "resid2"
+)
+
+# Correr el modelo
+set.seed(12345)
+mod_01 <- bugs(
+    model = model,
+    data = data,
+    inits = inits,
+    parameters = param,
+    bugs.directory =
+      "C:/Users/albaf/OneDrive/Escritorio/tarea_mapas_Alba/WinBUGS14",
+    n.iter = 75000, 
+    n.burnin = 7500 
+  )
+```
+
+```{r}
+# nº Rhat > 1.1
+sum(mod_01$summary[, 8] > 1.1)
+
+# Parámetros cuyo Rhat > 1.1
+mod_01$summary[which(mod_01$summary[, 8] > 1.1), 8]
+
+# nº n.eff (número de simulaciones efectivas) > 100
+sum(mod_01$summary[, 9] < 100)
+
+# Parámetros cuyas n.eff > 100
+mod_01$summary[which(mod_01$summary[, 9] < 100), 9]
+```
+
+
+![Figura 3. Residuos P(predichos > observados).](.\figuras\fig3.png)
+
+
+```{r, fig.align='center', out.width= TRUE, include = FALSE}
+hist(
+  mod_01$mean$P.resid,
+  xlab = "P(predichos>observados)",
+  main = "Residuos"
+)
+```
+
+
+## Implementación en INLA
+
+En su caso, INLA utiliza aproximaciones de Laplace para la construcción de la distribución *a posteriori*, lo que lo convierte en una herramienta más rápida que la utilización de cadenas MCMC, ofreciendo, por lo general, resultados similares a pesar de no ser asintóticamente exactos. También en este caso, para mantener la equivalencia entre los dos modelos propuestos, se ha decidido utilizar una distribución uniforme para las distribuciones *a priori* (hyperpriors).
+
+```{r}
+# Modelo
+h <- inla.read.graph(filename = "./datos/aragon.graph")
+
+# Efecto aleatorio estructurado S
+# y U no estructurado
+s <- u <- seq(1, 729)
+
+# Datos
+data <- cbind(Aragon.df, s, u)
+
+# Definición distribuciones uniformes a priori
+sdunif <- "expression:
+logdens=-log_precision/2;
+return(logdens)"
+
+# Formula
+formula <- O ~ 1 + f(
+  s,
+  model = "besag",
+  graph = h,
+  scale.model = TRUE,
+  hyper =
+    list(prec = list(prior = sdunif))
+) + f(
+  u,
+  model = "iid",
+  hyper =
+    list(prec = list(prior = sdunif))
+)
+
+# Modelo
+mod_02 <- inla(
+  formula,
+  family = "poisson",
+  data = data,
+  E = E,
+  control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE),
+  control.predictor = list(compute = TRUE, cdf = c(log(1)))
+)
+```
+
+
+# Tarea 3{.tabset .tabset-fade}
+
+**Representa geográficamente la media a posteriori de la RME en cada municipio, así como la probabilidad de que dicha RME exceda el valor 1.** 
+
+## Resultados modelo WinBUGS{.tabset .tabset-fade}
+
+En la Figura 3, se observan los resultados obtenidos con métodos MCMC. La media a posteriori del RME suavizado, nos indica que el riesgo es mayor en las zonas centrales, quizá algo más hacia el oeste. Además, es en estas zonas centrales donde la probabilidad de que el riesgo sea mayor que 1 es muy alta. En términos generales, seguimos observando, como en la primera imagen, un mayor riesgo en las zonas de mayor concentración poblacional sobre todo en el valle del Ebro. Sin embargo, puede apreciarse claramente el suavizado entre las distintas regiones independientemente de su población. Esto se aprecia con mucha más claridad si tenemos en cuenta los espacios con menos densidad demográfica, donde, contrariamente a los valores extremos de las representaciones anteriores, ahora podemos observar unas tasas coherentes con respecto a las relaciones de vecindad. 
+
+```{r}
+# Media a posteriori del Riesgo
+carto_aragon$rms_win <- mod_01$mean$R
+
+# Desviación típica a posteriori del Riesgo
+carto_aragon$rms_win_sd <- mod_01$sd$R
+
+# Probabilidad Riesgo > 1
+carto_aragon$pr_win <- mod_01$mean$PR
+
+# Media a posteriori de v
+carto_aragon$s_win <- mod_01$mean$sp
+
+# Desviación típica a posteriori de v
+carto_aragon$ssd_win <- mod_01$sd$sp
+```
+
+### Media a posteriori y desviación típica de RMS
+
+![Figura 4. Media y desviación típica a posteriori de la Razón de Mortalidad Suavizada por municipio en Aragón.](.\figuras\fig4.png)
+
+### P(RMS > 1)
+
+![Figura 5. Probabilidad de que RMS sea mayor que 1. Modelo ejecutado en WinBUGS por municipio en Aragón.](.\figuras\fig5.png)
+
+### Efecto espacial 
+
+![Figura 6. Media y desviación a posteriori del efecto espacial para cada municipio.](.\figuras\fig6.png)
+
+```{r, include = FALSE}
+rm_cutoff <- c(
+  min(carto_aragon$rms_win),
+  quantile(carto_aragon$rms_win, 0.35),
+  quantile(carto_aragon$rms_win, 0.5),
+  quantile(carto_aragon$rms_win, 0.75),
+  max(carto_aragon$rms_win)
+)
+
+rm_sd_cutoff <- c(
+  min(carto_aragon$rms_win_sd),
+  quantile(carto_aragon$rms_win_sd, 0.35),
+  quantile(carto_aragon$rms_win_sd, 0.5),
+  quantile(carto_aragon$RMS_win_sd, 0.75),
+  max(carto_aragon$rms_win_sd)
+)
+
+pr_cutoff <- c(0, 0.3, 0.5, 1)
+
+rm_disc <- cut(
+  carto_aragon$rms_win,
+  breaks = rm_cutoff,
+  include.lowest = TRUE
+)
+
+rm_sd_disc <- cut(
+  carto_aragon$rms_win_sd,
+  breaks  = rm_sd_cutoff,
+  include.lowest = TRUE
+)
+
+pr_disc <- cut(
+  carto_aragon$pr_win,
+  breaks = pr_cutoff,
+  include.lowest = TRUE
+)
+
+carto_aragon$rm_disc <- rm_disc
+carto_aragon$rm_sd_disc <- rm_sd_disc
+carto_aragon$pr_disc <- pr_disc
+
+# Plot media y sd a posteriori RMS
+grid.arrange(
+  spplot(
+    carto_aragon,
+    c("rm_disc"),
+    col.regions = brewer.pal(9, "BrBG")[c(2, 4, 6, 8)],
+    main = "Media a posteriori RMS",
+    par.settings =
+      list(axis.line = list(col = "transparent"))
+  ),
+  spplot(
+    carto_aragon,
+    c("rm_sd_disc"),
+    col.regions = brewer.pal(9, "BrBG")[c(2, 4, 6, 8)],
+    main = "Sd a posteriori RMS",
+    par.settings =
+      list(axis.line = list(col = "transparent"))
+  ),
+  ncol = 2
+)
+
+# Plot P(RMS > 1)
+spplot(
+  carto_aragon,
+  c("pr_disc"),
+  col.regions = brewer.pal(9, "BrBG")[c(3, 6, 9)],
+  main = "p(RMS > 1) ",
+  par.settings =
+    list(axis.line = list(col = "transparent"))
+)
+
+
+# Plot efecto espacial
+grid.arrange(
+  spplot(carto_aragon, c("s_win"),
+         main = c("Media a posteriori de v"),
+         #col.regions = rev(viridis_pal(option = "B")(101)),
+         col.regions = colorRampPalette(brewer.pal(9,'BrBG'))(101),
+         cuts        = 100,
+         colorkey=list(space="bottom", space = "bottom"),
+         par.settings =
+           list(axis.line = list(col =  'transparent',
+                                 legend.ticks = 'black'))),
+  spplot(carto_aragon, c("ssd_win"),
+         main = c("Sd a posteriori de v"),
+         col.regions = colorRampPalette(brewer.pal(9,'BrBG'))(101),
+         cuts        = 100,
+         colorkey=list(space="bottom", space = "bottom"),
+         par.settings =
+           list(axis.line = list(col =  'transparent',
+                                 legend.ticks = 'black'))),
+  ncol = 2)
+```
+
+## Resultados modelo INLA{.tabset .tabset-fade} 
+
+<<<<<<< HEAD
+En la Figura 7, se observan los resultados del mismo modelo, pero utilizando la aproximación numérica INLA. Tal y como se ha observado anteriormente, los resultados obtenidos con esta metodología no difieren prácticamente de los obtenidos mediante MCMC.
+=======
+En la Figura 4, se observan los resultados del mismo modelo, pero utilizando la aproximación numérica INLA. Tal y como se ha observado anteriormente, los resultados obtenidos con esta metodología no difieren prácticamente de los obtenidos mediante MCMC.
+>>>>>>> 3e6550f55e212874750dd3586c05a1937f1a093a
+
+```{r}
+# Media a posteriori de RMS
+carto_aragon$rms_inla <- mod_02$summary.fitted.values$mean
+
+# Desviación típica a posteriori de RMS
+carto_aragon$rms_inla_sd <- mod_02$summary.fitted.values$sd
+
+# Probabilidad RMS > 1
+carto_aragon$pr_inla <- 1 - mod_02$summary.fitted.values$`1 cdf`
+
+# Media a posteriori de v
+carto_aragon$s_inla <- round(mod_02$summary.random$s[["mean"]], 4)
+
+# Desviación típica a posteriori de v
+carto_aragon$ssd_inla <- round(mod_02$summary.random$s[["sd"]],5)
+```
+
+### Media y sd a posteriori de RMS
+
+![Figura 7. Media y desviación típica a posteriori de la Razón de Mortalidad Suavizada por municipio en Aragón.](.\figuras\fig7.png)
+
+
+### P(RMS > 1)
+
+
+![Figura 8. Probabilidad de que RMS sea mayor que 1. Modelo ejecutado en INLA.](.\figuras\fig8.png)
+
+
+### Efecto espacial
+
+![Figura 9. Media y desviación típica del efecto espacial.](.\figuras\fig9.png)
+
+
+```{r, include = FALSE}
+rm_cutoff <- c(
+  min(carto_aragon$rms_inla),
+  quantile(carto_aragon$rms_inla, 0.35),
+  quantile(carto_aragon$rms_inla, 0.5),
+  quantile(carto_aragon$rms_inla, 0.75),
+  max(carto_aragon$rms_inla)
+)
+
+rm_sd_cutoff <- c(
+  min(carto_aragon$rms_inla_sd),
+  quantile(carto_aragon$rms_inla_sd, 0.35),
+  quantile(carto_aragon$rms_inla_sd, 0.5),
+  quantile(carto_aragon$rms_inla_sd, 0.75),
+  max(carto_aragon$rms_inla_sd)
+)
+
+pr_cutoff <- c(0, 0.3, 0.5, 1)
+
+rm_disc <- cut(
+  carto_aragon$rms_inla,
+  breaks = rm_cutoff,
+  include.lowest = TRUE
+)
+
+rm_sd_disc <- cut(
+  carto_aragon$rms_inla_sd,
+  breaks = rm_sd_cutoff,
+  include.lowest = TRUE
+)
+
+pr_disc <- cut(
+  carto_aragon$pr_inla,
+  breaks = pr_cutoff,
+  include.lowest = TRUE
+)
+
+carto_aragon$rm_disc <- rm_disc
+carto_aragon$rm_sd_disc <- rm_sd_disc
+carto_aragon$pr_disc <- pr_disc
+
+# Plot media y sd a posteriori RMS
+grid.arrange(
+  spplot(
+    carto_aragon,
+    c("rm_disc"),
+    col.regions = brewer.pal(9, "BrBG")[c(2, 4, 6, 8)],
+    main = "Media a posteriori RMS",
+    par.settings =
+      list(axis.line = list(col = "transparent"))
+  ),
+  spplot(
+    carto_aragon,
+    c("rm_sd_disc"),
+    col.regions = brewer.pal(9, "BrBG")[c(2, 4, 6, 8)],
+    main = "Sd a posteriori RMS",
+    par.settings =
+      list(axis.line = list(col = "transparent"))
+  ),
+  ncol = 2
+)
+
+# Plot P(RMS > 1)
+spplot(
+  carto_aragon,
+  c("pr_disc"),
+  col.regions = brewer.pal(9, "BrBG")[c(3, 6, 9)],
+  main = "p(RMS > 1) ",
+  par.settings =
+    list(axis.line = list(col = "transparent"))
+)
+
+# Plot efecto espacial
+grid.arrange(
+  spplot(
+    carto_aragon, c("s_inla"),
+         main = c("Media a posteriori de v"),
+         #col.regions = rev(viridis_pal(option = "B")(101)),
+         col.regions = colorRampPalette(brewer.pal(9,'BrBG'))(101),
+         cuts        = 100,
+         colorkey=list(space="bottom", space = "bottom"),
+         par.settings =
+           list(axis.line = list(col =  'transparent',
+                                 legend.ticks = 'black'))),
+  spplot(
+    carto_aragon, c("ssd_inla"),
+         main = c("Sd a posteriori de v"),
+         col.regions = colorRampPalette(brewer.pal(9,'BrBG'))(101),
+         cuts        = 100,
+         colorkey=list(space="bottom", space = "bottom"),
+         par.settings =
+           list(axis.line = list(col =  'transparent',
+                                 legend.ticks = 'black'))),
+  ncol = 2)
+```
+
+
+# Conclusiones
+
+En el presente documento se ha demostrado como modelos estadísticos complejos pueden ayudar para comprender mejor procesos espaciales donde, frecuentemente, la combinación de datos de distintas magnitudes y, más en particular, los datos de microescala, pueden llevar a confusiones interpretativas si nos atenemos únicamente a modelos sencillos como la RME. En este sentido, la aplicación de inferencia Bayesiana puede ser de gran ayuda independientemente del marco de trabajo, donde, como ha podido comprobarse para los casos de WinBUGS e INLA, los resultados deben ser similares para los mismos datos y distribuciones *a priori*.
+
+Nuestros resultados, donde el riesgo por enfermedad isquémica en hombres en Aragón es mayor en los municipios de la zona central de la comunidad pueden ponerse en relación con las zonas más pobladas alrededor del valle del Ebro, y vienen a corroborar otros trabajos que ofrecen resultados similares, donde las áreas más ruralizadas se ven, en general, menos afectadas por este tipo de enfermedad (Cabré Vila et al., 2018).
+
+Por último, se ha intentado construir el trabajo de forma que sea reproducible. Esta condición no solo es necesaria para el correcto funcionamiento de la actividad científica, ya que facilita (1) nuevas pruebas sobre el método y resultados y (2) la aplicación del mismo método, o el desarrollo de metodologías complementarias para distintos casos de estudio; sino que además es saludable en cualquier trabajo de investigación, ya que obliga a los investigadores que participan de su desarrollo a ser claros y concisos en los conceptos a aplicar y en cómo aplicarlos.
+
+# Bibliografía
+
+Besag, J., York, J., Mollié, A., (1991). "Bayesian image restoration, with two applications in spatial statistics", *Annals of the Institute of Statistical Mathematics*, 43: 1-20.
+
+Boix Martínez, R., Aragonés Sanz, N., Medrano Albero, M. J., (2003). "Tendencias en la mortalidad por cardiopatía isquémica en 50 provincias españolas", *Revista Española de Cardiología"*, 56(9): 850-6.
+
+Cabré Vila, J. J., Ortega Vila, Y., Aragonès Benaiges, E., Basora Gallisà, J., Araujo Bernardo, Á., Solà Alberich, R. (2018). "Impacto del lugar de residencia sobre la presentación de eventos cardiovasculares y mortalidad por toda causa, en una cohorte afecta de síndrome metabólico", *Revista Española de Salud Pública*, 92: e20180969
+
+Giménez Muñoz, A., Ara J. R., Abad Díez, J. M., Campello Morer, I., Pérez Trullén, J. M. (2018). "Tendencia de las tasas de hospitalización y letalidad hospitalaria de la enfermedad cerebrovascular aguda en Aragón en el periodo 1998-2010", *Neurología*, 33(4): 224-232.
+
+Hervella, M. I., Carratalá-Munuera, C., Orozco-Beltrán, D., López-Pineda, A., Bertomeu-González, V., Gil-Guillén, V. F., Pascual, R., Quesada, J. A. (2021). "Tendencias de mortalidad prematura por cardiopatía isquémica en España durante el período 1998-2018", *Revista Española de Cardiología*, 74(10): 838-45.
+
+Tejada Meza, H., Artal Roy, J., Pérez Lázaro, C., Bestué Cardiel, M., Alberti González, O., Tejero Yuste, C., Hernando Quintana, N., Jarauta Lahoz, L., Giménez Muñoz, A., Campello Morer, I., Fernández Sanz, A., Cruz Velásquez, G., Latorre Jiménez, A., Vinueza Buitrón, P., Crespo Burillo, J. A., Palacín Larroy, M., Millán García, J. M., Muñoz Farjas, E., Oliván Usieto, J. A., Clavo Pérez, L. M., Marta Moreno, J. (2019). "Epidemiología y características del ictus isquémico en el adulto joven de Aragón", *Neurología*.
+
+
