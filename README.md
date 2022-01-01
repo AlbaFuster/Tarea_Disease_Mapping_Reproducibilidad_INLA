@@ -12,19 +12,22 @@ Para el correcto funcionamiento del repositorio es necesario tener instalado R-I
 
 1. Instalar R-INLA (en caso de problemas con la instalación acceder a [r-inla.org](https://www.r-inla.org/)):
 
+```
 install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE)
 
 install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/testing"), dep=TRUE)
-
+```
 
 2. Instalar paquetes:
 
+  ```
 install. packages(c("sp", "Matrix", "spdep","maptools", "lattice", "coda", "boot", "R2WinBUGS", "denstrip", "rgdal", "dplyr", "viridis", "denstrip",
 "rgdal","gridExtra", "RColorBrewer")) 
-
+```
   
 3. Cambiar directorio WinBUGS: al descargar las carpetas del repositorio es necesario cambiar el directorio de WinBUGS (bugs.directory), cambia la ruta donde hayas descargado todo el respositorio.
 
+```
 set.seed(12345)
 result2 <-
   bugs(
@@ -37,5 +40,5 @@ result2 <-
     n.burnin = 1000,
     #debug = TRUE
   )
-
+```
 </p>
