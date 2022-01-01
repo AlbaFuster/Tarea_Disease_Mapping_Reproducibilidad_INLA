@@ -2,7 +2,7 @@
 
 ## Introducción 
 <p align="justify">
-En este repositorio se introduce un ejemplo al análisis de datos espaciales en redes de localizaciones fijas enfocado a mapeo de enfermedades. El banco de datos se corresponde con la mortalidad en hombres por enfermedad isquémica en la provincia de Aragón. Se utilizarán modelos jerárquicos bayesianos con métodos de MCMC e INLA para ajustar un modelo de Besag. Así mismo, se han empleado recursos que permiten la reproducibilidad de la práctica.
+En este repositorio se introduce un ejemplo al análisis de datos espaciales en redes de localizaciones fijas enfocado a mapeo de enfermedades. El banco de datos se corresponde con la mortalidad en hombres por enfermedad isquémica en la provincia de Aragón. Se utilizarán modelos jerárquicos bayesianos con métodos de MCMC e INLA para ajustar un modelo de Besag. Así mismo, se han empleado recursos que permiten la reproducibilidad de la práctica. La reproducibilidad está enfocada al sistema operativo Windows.
 </p>
 
 ## Requisitos 
